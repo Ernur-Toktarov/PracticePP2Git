@@ -1,50 +1,52 @@
 import re
 
-# 1) 'a' followed by zero or more 'b'
+# 1. 'a' followed by zero or more 'b's
 s = input()
 print(bool(re.fullmatch(r'ab*', s)))
 
 
-# 2) 'a' followed by 2 to 3 'b'
+# 2. 'a' followed by two to three 'b'
 s = input()
 print(bool(re.fullmatch(r'ab{2,3}', s)))
 
 
-# 3) sequences of lowercase letters joined with underscore
+# 3. Lowercase letters joined with a underscore
 s = input()
 print(re.findall(r'[a-z]+_[a-z]+', s))
 
 
-# 4) one uppercase letter followed by lowercase letters
+# 4. One upper case letter followed by lower case letters
 s = input()
 print(re.findall(r'[A-Z][a-z]+', s))
 
 
-# 5) 'a' followed by anything, ending with 'b'
+# 5. 'a' followed by anything, ending in 'b'
 s = input()
 print(bool(re.fullmatch(r'a.*b', s)))
 
 
-# 6) replace space, comma, dot with colon
+# 6. Replace space, comma, or dot with a colon
 s = input()
 print(re.sub(r'[ ,.]', ':', s))
 
 
-# 7) snake_case to camelCase
+# 7. Snake case to camel case (Пример: my_snake_case -> MySnakeCase)
 s = input().split('_')
-print(s[0] + ''.join(word.capitalize() for word in s[1:]))
+print(''.join(word.capitalize() for word in s))
 
 
-# 8) split string at uppercase letters
+# 8. Split a string at uppercase letters
 s = input()
-print(re.findall(r'[A-Z][a-z]*', s))
+print(re.findall(r'[A-Z][^A-Z]*', s))
 
 
-# 9) insert spaces before capital letters
+# 9. Insert spaces between words starting with capital letters
 s = input()
-print(re.sub(r'([A-Z])', r' \1', s).strip())
+print(re.sub(r'([a-z])([A-Z])', r'\1 \2', s))
 
 
-# 10) camelCase to snake_case
+# 10. Camel case to snake case (Пример: CamelCase -> camel_case)
 s = input()
-print(re.sub(r'([A-Z])', r'_\1', s).lower())
+# Находим места, где маленькая буква (или цифра) граничит с большой
+result = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
+print(result.lower().lstrip('_'))
