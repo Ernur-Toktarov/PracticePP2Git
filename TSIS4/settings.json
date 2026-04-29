@@ -1,11 +1,9 @@
 {
-    "sound": true,
-    "car_color": "red",
-    "difficulty": "normal",
     "snake_color": [
         0,
         255,
         0
     ],
-    "grid_overlay": true
+    "grid_overlay": true,
+    "sound_on": true
 }

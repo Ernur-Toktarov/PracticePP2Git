@@ -1,226 +1,431 @@
+# МОДУЛЬ ОСНОВНОЙ ЛОГИКИ ИГРЫ "ЗМЕЙКА"
 import pygame
 import random
 
-# basic game settings
-WIDTH, HEIGHT = 800, 600
-BLOCK_SIZE = 20
-BASE_SPEED = 10
-
-# all the colors i need
-C_BG = (30, 30, 30)
-C_GRID = (50, 50, 50)
-C_FOOD_NORMAL = (200, 0, 0)
-C_FOOD_WEIGHTED = (255, 215, 0) # Gold
-C_POISON = (139, 0, 0) # Dark Red
-C_OBSTACLE = (100, 100, 100) # Gray
-C_PW_SPEED = (0, 255, 255) # Cyan
-C_PW_SLOW = (0, 0, 255) # Blue
-C_PW_SHIELD = (255, 0, 255) # Magenta
-
-def run_game(screen, settings, personal_best):
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont(None, 36)
+# КЛАСС ИГРЫ ЗМЕЙКА
+class SnakeGame:
+    def __init__(self, screen, config, db, player_id, username):
+        """Конструктор игры. Получает экран, настройки, БД, ID игрока и имя"""
+        self.screen = screen
+        self.config = config      # Настройки (цвет змейки, сетка, звук)
+        self.db = db              # База данных для сохранения рекордов
+        self.player_id = player_id
+        self.username = username  # имя не используется, но сохраняется
+        
+        # РАЗМЕР ИГРОВОГО ПОЛЯ (на весь экран 800x600)
+        self.game_width = 800
+        self.game_height = 600
+        
+        # РАЗМЕР КЛЕТКИ: 800/40 = 20, 600/30 = 20
+        self.cell_size = 20
+        self.grid_width = 40   # 40 клеток по горизонтали (40 * 20 = 800)
+        self.grid_height = 30  # 30 клеток по вертикали (30 * 20 = 600)
+        
+        # ЗАПУСКАЕМ НОВУЮ ИГРУ
+        self.reset_game()
+        
+    def reset_game(self):
+        """Сбрасывает все игровые переменные до начальных значений"""
+        # НАЧАЛЬНАЯ ПОЗИЦИЯ ЗМЕЙКИ (по центру поля)
+        start_x = self.grid_width // 2
+        start_y = self.grid_height // 2
+        self.snake = [(start_x, start_y)]  # Список сегментов (координаты)
+        self.direction = (1, 0)      # Текущее направление (вправо)
+        self.next_direction = (1, 0) # Следующее направление (для буферизации)
+        self.score = 0               # Набранные очки
+        self.level = 1               # Текущий уровень
+        self.speed = 10              # Скорость движения (чем выше, тем быстрее)
+        
+        # ИГРОВЫЕ ОБЪЕКТЫ
+        self.food = None             # Еда (красная)
+        self.poison = None           # Яд (бордовый с крестом)
+        self.powerup = None          # Бонус (скорость, замедление, щит)
+        self.speed_boost_end = 0     # Время окончания ускорения (мс)
+        self.slow_motion_end = 0     # Время окончания замедления (мс)
+        self.shield_active = False   # Активен ли щит
+        self.obstacles = []          # Список препятствий (с 3 уровня)
+        self.game_over = False       # Флаг окончания игры
+        self.game_over_reason = ""   # Причина окончания
+        
+        # ГЕНЕРАЦИЯ ПЕРВОЙ ЕДЫ
+        self.spawn_food()
+        
+        # ЗАГРУЗКА ЛИЧНОГО РЕКОРДА ИЗ БД
+        self.personal_best = self.db.get_personal_best(self.player_id)
+        self.food_eaten = 0          # Счётчик съеденной еды (для повышения уровня)
     
-    # starting position and color for the snake
-    snake = [[WIDTH//2, HEIGHT//2], [WIDTH//2 - BLOCK_SIZE, HEIGHT//2], [WIDTH//2 - 2*BLOCK_SIZE, HEIGHT//2]]
-    dx, dy = BLOCK_SIZE, 0
-    snake_color = tuple(settings["snake_color"])
+    def generate_obstacles(self):
+        """Генерация препятствий (начиная с 3 уровня)
+           Количество препятствий: min(5 + уровень, 20)"""
+        num_obstacles = min(5 + self.level, 20)
+        self.obstacles = []
+        
+        for _ in range(num_obstacles):
+            attempts = 0
+            while attempts < 100:  # Максимум 100 попыток найти свободное место
+                # Генерируем случайные координаты (не по краям поля)
+                x = random.randint(1, self.grid_width - 2)
+                y = random.randint(1, self.grid_height - 2)
+                pos = (x, y)
+                # Проверяем, что позиция свободна:
+                # - не занята змеёй
+                # - не занята едой
+                # - нет другого препятствия
+                # - не занята ядом
+                if (pos not in self.snake and pos != self.food and 
+                    pos not in self.obstacles and pos != self.poison):
+                    self.obstacles.append(pos)
+                    break
+                attempts += 1
     
-    # keep track of score, level, and speed
-    score = 0
-    level = 1
-    food_eaten_this_level = 0
-    current_speed = BASE_SPEED
+    def spawn_food(self):
+        """Создаёт новую еду на свободной клетке"""
+        attempts = 0
+        while attempts < 100:
+            # Случайная позиция в пределах поля
+            x = random.randint(0, self.grid_width - 1)
+            y = random.randint(0, self.grid_height - 1)
+            pos = (x, y)
+            # Проверяем, что клетка свободна
+            if (pos not in self.snake and pos not in self.obstacles and
+                pos != self.poison and pos != self.food):
+                self.food = pos
+                
+                # Спавн яда с вероятностью 20% (если яда ещё нет)
+                if random.random() < 0.2 and not self.poison:
+                    self.spawn_poison()
+                
+                # Спавн бонуса с вероятностью 15% (если бонуса ещё нет)
+                if random.random() < 0.15 and not self.powerup:
+                    self.spawn_powerup()
+                return
+            attempts += 1
     
-    # helper to randomly place walls without trapping the snake
-    obstacles = []
-    def generate_obstacles():
-        obs = []
-        if level >= 3:
-            num_obs = level * 2
-            for _ in range(num_obs):
-                while True:
-                    ox = random.randrange(0, WIDTH, BLOCK_SIZE)
-                    oy = random.randrange(0, HEIGHT, BLOCK_SIZE)
-                    # keep the middle area clear so we don't die instantly
-                    if not (WIDTH//2 - 100 <= ox <= WIDTH//2 + 100 and HEIGHT//2 - 100 <= oy <= HEIGHT//2 + 100):
-                        obs.append([ox, oy])
-                        break
-        return obs
+    def spawn_poison(self):
+        """Создаёт ядовитую еду на свободной клетке"""
+        attempts = 0
+        while attempts < 100:
+            x = random.randint(0, self.grid_width - 1)
+            y = random.randint(0, self.grid_height - 1)
+            pos = (x, y)
+            if (pos not in self.snake and pos not in self.obstacles and
+                pos != self.food and pos != self.poison):
+                self.poison = pos
+                return
+            attempts += 1
     
-    obstacles = generate_obstacles()
-
-    # find a random spot on the board that isn't blocked
-    def get_random_pos():
-        while True:
-            x = random.randrange(0, WIDTH, BLOCK_SIZE)
-            y = random.randrange(0, HEIGHT, BLOCK_SIZE)
-            if [x, y] not in snake and [x, y] not in obstacles:
-                return [x, y]
-
-    # set up the first food and maybe some poison
-    food = get_random_pos()
-    food_type = "normal"
-    food_timer = 0
-    poison = get_random_pos() if random.random() < 0.3 else None
-
-    # variables to manage active powerups
-    powerup = None
-    powerup_type = None
-    powerup_spawn_time = 0
-    active_effect = None
-    effect_end_time = 0
-    shield_active = False
-
-    running = True
-    while running:
+    def spawn_powerup(self):
+        """Создаёт бонус (ускорение, замедление, щит) на свободной клетке"""
+        powerup_types = ['speed', 'slow', 'shield']  # Возможные типы бонусов
+        self.powerup = {
+            'pos': None,
+            'type': random.choice(powerup_types),          # Случайный тип
+            'spawn_time': pygame.time.get_ticks()          # Время появления (для таймаута)
+        }
+        
+        attempts = 0
+        while attempts < 100:
+            x = random.randint(0, self.grid_width - 1)
+            y = random.randint(0, self.grid_height - 1)
+            pos = (x, y)
+            if (pos not in self.snake and pos not in self.obstacles and
+                pos != self.food and pos != self.poison):
+                self.powerup['pos'] = pos
+                return
+            attempts += 1
+        self.powerup = None  # Не удалось разместить - бонус не появляется
+    
+    def update(self):
+        """ОБНОВЛЕНИЕ СОСТОЯНИЯ ИГРЫ (вызывается каждый кадр)"""
+        if self.game_over:
+            return
+        
+        # ПРИМЕНЯЕМ БУФЕРИЗИРОВАННОЕ НАПРАВЛЕНИЕ
+        self.direction = self.next_direction
+        head = self.snake[0]
+        new_head = (head[0] + self.direction[0], head[1] + self.direction[1])
+        
+        # === ПРОВЕРКА СТОЛКНОВЕНИЙ (с защитой щита) ===
+        
+        # 1. СТОЛКНОВЕНИЕ С СОБОЙ
+        if new_head in self.snake[1:]:  # [1:] - все сегменты, кроме головы
+            if not self.shield_active:
+                self.end_game("Self collision!")
+                return
+            else:
+                self.shield_active = False  # Щит поглотил удар
+        
+        # 2. СТОЛКНОВЕНИЕ СО СТЕНОЙ
+        if (new_head[0] < 0 or new_head[0] >= self.grid_width or
+            new_head[1] < 0 or new_head[1] >= self.grid_height):
+            if not self.shield_active:
+                self.end_game("Hit the wall!")
+                return
+            else:
+                self.shield_active = False
+        
+        # 3. СТОЛКНОВЕНИЕ С ПРЕПЯТСТВИЕМ
+        if new_head in self.obstacles:
+            if not self.shield_active:
+                self.end_game("Hit an obstacle!")
+                return
+            else:
+                self.shield_active = False
+        
+        # === ПРОВЕРКА СЪЕДАНИЯ ОБЪЕКТОВ ===
+        
+        # 4. СЪЕДАНИЕ ЕДЫ (нормальная еда)
+        if new_head == self.food:
+            self.snake.insert(0, new_head)  # Добавляем новую голову (растём)
+            self.score += 10                # +10 очков
+            self.food_eaten += 1            # Увеличиваем счётчик съеденной еды
+            self.food = None
+            self.poison = None
+            self.spawn_food()               # Создаём новую еду
+            
+            # ПОВЫШЕНИЕ УРОВНЯ (каждые 5 съеденных еды)
+            if self.food_eaten % 5 == 0:
+                self.level += 1
+                if self.level >= 3:         # Начиная с 3 уровня - препятствия
+                    self.generate_obstacles()
+                # Увеличиваем скорость (но не выше 20)
+                self.speed = min(10 + self.level, 20)
+            return  # Выходим, не двигаемся дальше (уже добавили голову)
+        
+        # 5. СЪЕДАНИЕ ЯДА (укорачивает змею)
+        if new_head == self.poison:
+            # Укорачиваем змею на 2 сегмента
+            for _ in range(2):
+                if len(self.snake) > 1:
+                    self.snake.pop()
+            
+            # Если змея стала слишком короткой - игра окончена
+            if len(self.snake) <= 1:
+                self.end_game("You became too short!")
+                return
+            
+            # Добавляем новую голову
+            self.snake.insert(0, new_head)
+            self.poison = None
+            self.spawn_food()  # Генерируем новую еду
+            return
+        
+        # 6. СЪЕДАНИЕ БОНУСА
+        if self.powerup and new_head == self.powerup['pos']:
+            self.activate_powerup(self.powerup['type'])
+            self.powerup = None
+            self.spawn_food()  # Генерируем новую еду
+        
+        # УДАЛЕНИЕ ПРОСРОЧЕННОГО БОНУСА (через 8 секунд)
+        if self.powerup:
+            current_time = pygame.time.get_ticks()
+            if current_time - self.powerup['spawn_time'] > 8000:
+                self.powerup = None
+                self.spawn_food()
+        
+        # === ОБЫЧНОЕ ДВИЖЕНИЕ (без еды) ===
+        self.snake.insert(0, new_head)  # Добавляем новую голову
+        self.snake.pop()                # Удаляем последний сегмент (хвост)
+        
+        # === ОБНОВЛЕНИЕ ДЕЙСТВИЯ БОНУСОВ ===
         current_time = pygame.time.get_ticks()
         
-        # check for key presses to move or quit
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return None, None
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_UP and dy == 0: dx, dy = 0, -BLOCK_SIZE
-                elif event.key == pygame.K_DOWN and dy == 0: dx, dy = 0, BLOCK_SIZE
-                elif event.key == pygame.K_LEFT and dx == 0: dx, dy = -BLOCK_SIZE, 0
-                elif event.key == pygame.K_RIGHT and dx == 0: dx, dy = BLOCK_SIZE, 0
-
-        # figure out where the snake's head is going next
-        new_head = [snake[0][0] + dx, snake[0][1] + dy]
-
-        # check if we hit a wall, obstacle, or ourself
-        collision = False
-        if new_head[0] < 0 or new_head[0] >= WIDTH or new_head[1] < 0 or new_head[1] >= HEIGHT:
-            collision = True
-        if new_head in snake or new_head in obstacles:
-            collision = True
-
-        if collision:
-            if shield_active:
-                shield_active = False
-                active_effect = None
-                # if shield is on, teleport to the other side instead of dying
-                if new_head[0] < 0: new_head[0] = WIDTH - BLOCK_SIZE
-                elif new_head[0] >= WIDTH: new_head[0] = 0
-                elif new_head[1] < 0: new_head[1] = HEIGHT - BLOCK_SIZE
-                elif new_head[1] >= HEIGHT: new_head[1] = 0
-                else: 
-                    # if we hit ourself or a wall inside, just ignore the movement for a frame
-                    continue 
-            else:
-                running = False # we died, end game
-                continue
-
-        snake.insert(0, new_head)
-
-        # if we ate food, get points and maybe level up
-        if new_head == food:
-            if settings["sound"]: pass # pygame.mixer.Sound('eat.wav').play()
-            if food_type == "normal": score += 10
-            elif food_type == "weighted": score += 30
-            
-            food_eaten_this_level += 1
-            if food_eaten_this_level >= 5: # level up every 5 foods
-                level += 1
-                food_eaten_this_level = 0
-                obstacles = generate_obstacles()
-            
-            # spawn new food (sometimes make it golden/weighted)
-            food = get_random_pos()
-            rand_val = random.random()
-            if rand_val < 0.2:
-                food_type = "weighted"
-                food_timer = current_time + 5000 # disappears in 5 seconds
-            else:
-                food_type = "normal"
-            
-            # small chance to spawn poison when eating
-            poison = get_random_pos() if random.random() < 0.3 else None
-
-        else:
-            snake.pop() # remove tail if we didn't eat so we don't grow forever
-
-        # if we ate poison, shrink the snake
-        if poison and new_head == poison:
-            if settings["sound"]: pass # pygame.mixer.Sound('hurt.wav').play()
-            if len(snake) > 0: snake.pop()
-            if len(snake) > 0: snake.pop()
-            poison = None
-            if len(snake) <= 1:
-                running = False # died because we shrunk too much
-                continue
-
-        # randomly spawn powerups
-        if powerup is None and random.random() < 0.01:
-            powerup = get_random_pos()
-            powerup_type = random.choice(["speed", "slow", "shield"])
-            powerup_spawn_time = current_time
+        # Завершение ускорения
+        if self.speed_boost_end and current_time > self.speed_boost_end:
+            self.speed_boost_end = 0
+            self.speed = 10 + self.level if self.level < 20 else 20
         
-        # remove powerup if it's ignored for 8 seconds
-        if powerup and current_time - powerup_spawn_time > 8000:
-            powerup = None
-            
-        # check if we grabbed a powerup
-        if powerup and new_head == powerup:
-            if settings["sound"]: pass # pygame.mixer.Sound('powerup.wav').play()
-            active_effect = powerup_type
-            effect_end_time = current_time + 5000 # lasts for 5 seconds
-            if powerup_type == "shield": shield_active = True
-            powerup = None
-            
-        # remove powerup effect when time is up
-        if active_effect and active_effect != "shield" and current_time > effect_end_time:
-            active_effect = None
-            
-        # change game speed based on level and powerups
-        fps = BASE_SPEED + (level * 2)
-        if active_effect == "speed": fps += 10
-        elif active_effect == "slow": fps = max(5, fps - 5)
-
-        # remove golden food if they took too long to get it
-        if food_type == "weighted" and current_time > food_timer:
-            food = get_random_pos()
-            food_type = "normal"
-
-        # draw everything on the screen
-        screen.fill(C_BG)
-        if settings["grid_overlay"]:
-            for x in range(0, WIDTH, BLOCK_SIZE): pygame.draw.line(screen, C_GRID, (x, 0), (x, HEIGHT))
-            for y in range(0, HEIGHT, BLOCK_SIZE): pygame.draw.line(screen, C_GRID, (0, y), (WIDTH, y))
-
-        # draw obstacles
-        for obs in obstacles:
-            pygame.draw.rect(screen, C_OBSTACLE, (obs[0], obs[1], BLOCK_SIZE, BLOCK_SIZE))
-
-        # draw food (gold if weighted, red if normal)
-        color = C_FOOD_WEIGHTED if food_type == "weighted" else C_FOOD_NORMAL
-        pygame.draw.rect(screen, color, (food[0], food[1], BLOCK_SIZE, BLOCK_SIZE))
-
-        # draw poison
-        if poison:
-            pygame.draw.rect(screen, C_POISON, (poison[0], poison[1], BLOCK_SIZE, BLOCK_SIZE))
-
-        # draw powerup depending on what type it is
-        if powerup:
-            c = C_PW_SPEED if powerup_type == "speed" else C_PW_SLOW if powerup_type == "slow" else C_PW_SHIELD
-            pygame.draw.rect(screen, c, (powerup[0], powerup[1], BLOCK_SIZE, BLOCK_SIZE))
-
-        # draw the snake body
-        for idx, segment in enumerate(snake):
-            c = snake_color
-            if shield_active and idx == 0: c = C_PW_SHIELD # show the shield on the head
-            pygame.draw.rect(screen, c, (segment[0], segment[1], BLOCK_SIZE, BLOCK_SIZE))
-
-        # show stats at the top
-        hud_text = font.render(f"Score: {score}  Level: {level}  Best: {personal_best}", True, (255, 255, 255))
-        screen.blit(hud_text, (10, 10))
+        # Завершение замедления
+        if self.slow_motion_end and current_time > self.slow_motion_end:
+            self.slow_motion_end = 0
+            self.speed = 10 + self.level if self.level < 20 else 20
+    
+    def activate_powerup(self, powerup_type):
+        """Активирует бонус в зависимости от типа"""
+        current_time = pygame.time.get_ticks()
         
-        if active_effect:
-            eff_text = font.render(f"Active: {active_effect.upper()}", True, (255, 255, 0))
-            screen.blit(eff_text, (WIDTH - 200, 10))
-
-        pygame.display.flip()
-        clock.tick(fps)
-
-    return score, level
+        if powerup_type == 'speed':
+            # Ускорение на 5 секунд (+5 к скорости, макс 30)
+            self.speed_boost_end = current_time + 5000  # +5000 мс = 5 секунд
+            self.speed = min(self.speed + 5, 30)
+        elif powerup_type == 'slow':
+            # Замедление на 5 секунд (-5 к скорости, минимум 5)
+            self.slow_motion_end = current_time + 5000
+            self.speed = max(self.speed - 5, 5)
+        elif powerup_type == 'shield':
+            # Щит (без таймера, сбрасывается при столкновении)
+            self.shield_active = True
+    
+    def end_game(self, reason):
+        """Завершает игру, сохраняет результат в БД"""
+        self.game_over = True
+        self.game_over_reason = reason
+        self.db.save_game_session(self.player_id, self.score, self.level)
+    
+    def draw(self):
+        """ОТРИСОВКА ВСЕХ ИГРОВЫХ ОБЪЕКТОВ НА ЭКРАНЕ"""
+        
+        # === ФОН ИГРОВОГО ПОЛЯ ===
+        game_rect = pygame.Rect(0, 0, self.game_width, self.game_height)
+        pygame.draw.rect(self.screen, (15, 15, 15), game_rect)  # Тёмно-серый фон
+        pygame.draw.rect(self.screen, (50, 50, 50), game_rect, 2)  # Рамка
+        
+        # === СЕТКА (GRID) ===
+        if self.config.grid_overlay:
+            # Вертикальные линии
+            for x in range(0, self.game_width + 1, self.cell_size):
+                pygame.draw.line(self.screen, (35, 35, 35), (x, 0), (x, self.game_height), 1)
+            # Горизонтальные линии
+            for y in range(0, self.game_height + 1, self.cell_size):
+                pygame.draw.line(self.screen, (35, 35, 35), (0, y), (self.game_width, y), 1)
+        
+        # === ПРЕПЯТСТВИЯ ===
+        for obs in self.obstacles:
+            rect = pygame.Rect(
+                obs[0] * self.cell_size,
+                obs[1] * self.cell_size,
+                self.cell_size - 1,
+                self.cell_size - 1
+            )
+            pygame.draw.rect(self.screen, (80, 80, 80), rect)      # Тёмно-серый блок
+            pygame.draw.rect(self.screen, (120, 120, 120), rect, 1) # Светлая рамка
+        
+        # === ЗМЕЙКА ===
+        for i, segment in enumerate(self.snake):
+            rect = pygame.Rect(
+                segment[0] * self.cell_size,
+                segment[1] * self.cell_size,
+                self.cell_size - 1,
+                self.cell_size - 1
+            )
+            # ГОЛОВА (отрисовывается ярче и с глазами)
+            if i == 0:
+                color = self.config.snake_color
+                pygame.draw.rect(self.screen, color, rect)
+                
+                # ГЛАЗА (зависят от направления движения)
+                eye_size = self.cell_size // 5
+                if self.direction == (1, 0):  # Вправо
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.right - eye_size, rect.top + eye_size), eye_size // 2)
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.right - eye_size, rect.bottom - eye_size), eye_size // 2)
+                elif self.direction == (-1, 0):  # Влево
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.left + eye_size, rect.top + eye_size), eye_size // 2)
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.left + eye_size, rect.bottom - eye_size), eye_size // 2)
+                elif self.direction == (0, -1):  # Вверх
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.left + eye_size, rect.top + eye_size), eye_size // 2)
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.right - eye_size, rect.top + eye_size), eye_size // 2)
+                else:  # Вниз
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.left + eye_size, rect.bottom - eye_size), eye_size // 2)
+                    pygame.draw.circle(self.screen, (255, 255, 255), 
+                                      (rect.right - eye_size, rect.bottom - eye_size), eye_size // 2)
+            else:
+                # ТЕЛО (обычный цвет с чёрной обводкой)
+                pygame.draw.rect(self.screen, self.config.snake_color, rect)
+                pygame.draw.rect(self.screen, (0, 0, 0), rect, 1)
+        
+        # === ЕДА (КРАСНЫЙ КВАДРАТ С СИЯНИЕМ) ===
+        if self.food:
+            rect = pygame.Rect(
+                self.food[0] * self.cell_size,
+                self.food[1] * self.cell_size,
+                self.cell_size - 1,
+                self.cell_size - 1
+            )
+            pygame.draw.rect(self.screen, (255, 0, 0), rect)
+            pygame.draw.circle(self.screen, (255, 100, 100), rect.center, self.cell_size // 3)
+        
+        # === ЯД (БОРДОВЫЙ С КРЕСТОМ) ===
+        if self.poison:
+            rect = pygame.Rect(
+                self.poison[0] * self.cell_size,
+                self.poison[1] * self.cell_size,
+                self.cell_size - 1,
+                self.cell_size - 1
+            )
+            pygame.draw.rect(self.screen, (139, 0, 0), rect)
+            # Рисуем крест (кости черепа)
+            pygame.draw.line(self.screen, (0, 0, 0), rect.topleft, rect.bottomright, 2)
+            pygame.draw.line(self.screen, (0, 0, 0), rect.topright, rect.bottomleft, 2)
+        
+        # === БОНУСЫ ===
+        if self.powerup:
+            rect = pygame.Rect(
+                self.powerup['pos'][0] * self.cell_size,
+                self.powerup['pos'][1] * self.cell_size,
+                self.cell_size - 1,
+                self.cell_size - 1
+            )
+            
+            # Выбираем цвет и иконку в зависимости от типа бонуса
+            if self.powerup['type'] == 'speed':
+                color = (255, 255, 0)   # Жёлтый
+                icon = "⚡"              # Молния
+            elif self.powerup['type'] == 'slow':
+                color = (0, 255, 255)   # Голубой
+                icon = "🐢"              # Черепаха
+            else:  # shield
+                color = (255, 0, 255)   # Пурпурный
+                icon = "🛡️"              # Щит
+            
+            pygame.draw.rect(self.screen, color, rect)
+            
+            # РИСУЕМ ИКОНКУ
+            icon_font = pygame.font.Font(None, self.cell_size)
+            icon_surf = icon_font.render(icon, True, (255, 255, 255))
+            icon_rect = icon_surf.get_rect(center=rect.center)
+            self.screen.blit(icon_surf, icon_rect)
+        
+        # === UI ТЕКСТ (ОЧКИ, УРОВЕНЬ, БОНУСЫ) ===
+        font = pygame.font.Font(None, 28)
+        
+        # ПОЛУПРОЗРАЧНЫЙ ФОН ДЛЯ ТЕКСТА (чтобы текст был читаем на любом фоне)
+        text_bg = pygame.Surface((150, 120))
+        text_bg.set_alpha(180)        # Прозрачность 180/255
+        text_bg.fill((0, 0, 0))       # Чёрный фон
+        self.screen.blit(text_bg, (5, 5))
+        
+        score_text = font.render(f"Score: {self.score}", True, (255, 255, 255))
+        level_text = font.render(f"Level: {self.level}", True, (255, 255, 255))
+        best_text = font.render(f"Best: {self.personal_best}", True, (255, 255, 255))
+        
+        self.screen.blit(score_text, (10, 10))
+        self.screen.blit(level_text, (10, 40))
+        self.screen.blit(best_text, (10, 70))
+        
+        # ОТОБРАЖАЕМ АКТИВНЫЕ ЭФФЕКТЫ (скорость, замедление, щит)
+        y_offset = 110
+        if self.speed_boost_end:
+            time_left = max(0, (self.speed_boost_end - pygame.time.get_ticks()) // 1000)
+            boost_text = font.render(f"⚡ Speed: {time_left}s", True, (255, 255, 0))
+            self.screen.blit(boost_text, (10, y_offset))
+            y_offset += 25
+        
+        if self.slow_motion_end:
+            time_left = max(0, (self.slow_motion_end - pygame.time.get_ticks()) // 1000)
+            slow_text = font.render(f"🐢 Slow: {time_left}s", True, (0, 255, 255))
+            self.screen.blit(slow_text, (10, y_offset))
+            y_offset += 25
+        
+        if self.shield_active:
+            shield_text = font.render(f"🛡️ Shield", True, (255, 0, 255))
+            self.screen.blit(shield_text, (10, y_offset))
+    
+    def handle_event(self, event):
+        """ОБРАБОТКА НАЖАТИЙ КЛАВИШ"""
+        if event.type == pygame.KEYDOWN:
+            # Защита от разворота на 180 градусов
+            if event.key == pygame.K_UP and self.direction != (0, 1):
+                self.next_direction = (0, -1)  # Вверх
+            elif event.key == pygame.K_DOWN and self.direction != (0, -1):
+                self.next_direction = (0, 1)   # Вниз
+            elif event.key == pygame.K_LEFT and self.direction != (1, 0):
+                self.next_direction = (-1, 0)  # Влево
+            elif event.key == pygame.K_RIGHT and self.direction != (-1, 0):
+                self.next_direction = (1, 0)   # Вправо
