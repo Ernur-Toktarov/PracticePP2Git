@@ -68,7 +68,6 @@ def add_contact_interactive():
             return
 
         contact_id = insert_contact(cur, name, email, birthday, group_name)
-
         while True:
             phone = input("Phone (leave empty to stop): ").strip()
             if not phone:

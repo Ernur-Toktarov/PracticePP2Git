@@ -1,6 +1,3 @@
-"""
-racer.py — Game objects: Player, Traffic, Obstacles, PowerUps, Road
-"""
 import pygame, random, math
 
 # ── Layout ────────────────────────────────────────────────────
