@@ -1,7 +1,7 @@
 import sys
 import pygame
 
-from tools import *
+from TSIS2.tools import *
 
 
 WIDTH = 1200
